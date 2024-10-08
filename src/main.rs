@@ -1,8 +1,6 @@
 use colored::Colorize;
-use std::collections::hash_map::Entry;
 use std::env;
 use std::fs;
-use std::fs::Metadata;
 use walkdir::WalkDir;
 
 struct Config {
@@ -18,7 +16,7 @@ struct Config {
 }
 
 impl Config {
-    fn new(args: &[String]) -> Result<Config, &str> {
+    fn new(args: &[String]) -> Config {
         let mut case_sensitive = true;
         let mut print_line_numbers = false;
         let mut invert_match = false;
@@ -43,29 +41,30 @@ impl Config {
             }
         }
 
+        // Expect the query before the file path(s)
         if non_option_args.len() >= 2 {
             query = non_option_args[1].clone();
             file_paths = non_option_args[2..].to_vec();
         }
 
-        Ok(Config {
+        Config {
             query,
             file_paths,
             case_sensitive,
-            invert_match,
-            print_file_names,
             print_line_numbers,
+            invert_match,
             recursive_dir_search,
+            print_file_names,
             color_output,
             show_help,
-        })
+        }
     }
 }
 
 fn main() {
     let args: Vec<String> = env::args().collect();
 
-    let config = Config::new(&args).unwrap();
+    let config = Config::new(&args);
 
     if config.show_help {
         print_help();
@@ -79,12 +78,12 @@ fn print_help() {
     println!("Usage: grep [OPTIONS] <pattern> <files...>");
     println!("Options:");
     println!("-i                Case-insensitive search");
-    println!("-n,               print line number with output lines");
-    println!("-v,               select non-matching lines");
-    println!("-r,               search directories recursively");
-    println!("-f,               print the file name for each match");
-    println!("-c,               highlight the matching text");
-    println!("-h, --help        display this help and exit");
+    println!("-n                Print line numbers");
+    println!("-v                Invert match (exclude lines that match the pattern)");
+    println!("-r                Recursive directory search");
+    println!("-f                Print filenames");
+    println!("-c                Enable colored output");
+    println!("-h, --help        Show help information");
 }
 
 fn search_file(config: &Config, file_path: &str) {
@@ -103,10 +102,14 @@ fn search_file(config: &Config, file_path: &str) {
             line.to_lowercase().find(&query.to_lowercase())
         };
 
+        // If the query was found in this line and invert-match is disabled
+        // Or if the query was not found in this line and invert-match is enabled,
+        // Then, we print the line with all relevant options
         if !config.invert_match && query_location.is_some()
             || config.invert_match && query_location.is_none()
         {
             let line_num = if config.print_line_numbers {
+                let n = n + 1; // Line numbers start at 1 not zero
                 format!("{n}: ")
             } else {
                 String::new()
@@ -115,6 +118,7 @@ fn search_file(config: &Config, file_path: &str) {
             let mut line = line.to_string();
             if config.color_output && query_location.is_some() {
                 let i = query_location.unwrap();
+                // Colour the text that matched the query
                 line.replace_range(
                     i..(i + query.len()),
                     &line[i..(i + query.len())].red().to_string(),
@@ -128,28 +132,18 @@ fn search_file(config: &Config, file_path: &str) {
 
 fn search_all_files(config: &Config) {
     for file_path in config.file_paths.iter() {
-        if file_path.contains("*") {
-            for entry in WalkDir::new(file_path).into_iter() {
-                let entry = entry.unwrap();
-                let path = entry.path();
-                search_file(config, &path.to_str().unwrap());
-            }
-            continue;
+        let mut crawler = WalkDir::new(file_path);
+
+        if !config.recursive_dir_search {
+            crawler = crawler.max_depth(0); // Prevents recursive directory search
         }
 
-        let metadata = fs::metadata(file_path).unwrap();
-        let file_type = metadata.file_type();
-        dbg!(file_type);
-        if file_type.is_dir() && config.recursive_dir_search {
-            for entry in WalkDir::new(file_path) {
-                let entry = entry.unwrap();
-                let path = entry.path();
-                if path.is_file() {
-                    search_file(config, &path.to_str().unwrap());
-                }
+        for entry in crawler {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_file() {
+                search_file(config, &path.to_str().unwrap());
             }
-        } else {
-            search_file(config, file_path);
         }
     }
 }
